@@ -9,13 +9,13 @@ def main(file_name):
     # and the parameters for the excitation signals
     freq_range, f, N, p, m, u, y = load_identification_data(file_name)
     sysid = SysIdentification(freq_range=freq_range,
-                                           f=f,
-                                           N=N,
-                                           p=p,
-                                           m=m)
-    sysid.import_data(u=u, y=y)
-    sysid.initialization()
+                              f=f, N=N, p=p, m=m)
+    sysid.initialization(u=u, y=y)
     sysid.identify_system()
     
+    print('here')
+    # TODO: compare to the true value 
+
+
 if __name__ == '__main__':
-    main()
+    main(file_name='test')

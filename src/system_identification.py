@@ -4,23 +4,20 @@ in the frequency domain.
 import numpy as np
 import scipy.signal as signal
 
-
 class SysIdentification():
     """Identify a MIMO system in the frequency domian.
     """
     def __init__(self, freq_range: tuple,
-                 f_stamp: np.ndarray,
                  f: float,
                  N: int,
                  p: int,
                  m: int,
                  order_max: int=5,
                  delay_max: int=7) -> None:
-        """Initialize a instance.
+        """Initialize an instance.
         
         Args:
             freq_range: the excited frequency range
-            f_stamp: the frequency stamp
             f: the sampling frequency
             N: the number of points of each period
             p: the number of repeat times of each signal
@@ -34,7 +31,6 @@ class SysIdentification():
                         considering the transient effect
         """
         self.freq_range = freq_range
-        self.f_stamp = f_stamp
         self.f = f
         self.N = N
         self.p = p
@@ -45,6 +41,22 @@ class SysIdentification():
         self.dt = 1/self.f
         self.nr_abandon = 2
 
+    @staticmethod
+    def get_freq_stamp(f: float, 
+                       N: int) -> np.ndarray:
+        """Calculate the frequency stamp: f_i = i*(f/N).
+        """
+        return np.arange(0, N) / N * f
+    
+    @staticmethod
+    def get_freq_index(freq_range: tuple,
+                       f_stamp: np.ndarray) -> tuple:
+        """Get the indices of the start and end
+        frequencies in the stamp.
+        """        
+        return (np.where(f_stamp == freq_range[0])[0][0], 
+                np.where(f_stamp == freq_range[1])[0][0])
+    
     def initialization(self, u: np.ndarray,
                        y: np.ndarray) -> None:
         """Import the inputs and outputs. Initialize and
@@ -57,12 +69,19 @@ class SysIdentification():
         Attributes:
             nr_inputs (int): the number of inputs
             nr_outputs (int): the number of outputs
-            U (nr_inputs x N*p*m): the frequency input signals
-            Y (nr_outpus x N*p*m): the frequency output signals
+            f_stamp: the frequency stamp
+            idx: the start and end indices in the frequency stamp
+            params (nr_outputs x nr_inputs): parameters for the frequency response functions
             U_split (N x nr_inputs x p x m): recontruct U
             Y_split (N x nr_outputs x p x m): recontruct Y
-            U_bar (N x nr_inputs x m): the mean value wrt p times
-            Y_bar (N x nr_outputs x m): the mean value wrt p times
+            U (nr_inputs x N x p x m): the frequency input signals
+            Y (nr_outpus x N x p x m): the frequency output signals
+            U_bar (N x nr_inputs x m): the mean value wrt (p-nr_abandon) times
+            Y_bar (N x nr_outputs x m): the mean value wrt (p-nr_abandon) times
+            omega: the valid radian frequency stamp based on the frequency range
+            s: the Laplace variable: s = j * omega
+            G_meas (N x nr_outputs x nr_inputs): the measured response at each frequency
+            G_cov (nr_outputs*nr_inputs x nr_outputs*nr_inputs): the covariance matrix of the transfer functions            
         """
         # import the inputs and outputs
         self.u = u
@@ -70,58 +89,104 @@ class SysIdentification():
         # get the number of inputs and outputs
         self.nr_inputs = self.u.shape[0]
         self.nr_outputs = self.y.shape[0]
+        # get the frequency stamp
+        self.f_stamp = self.get_freq_stamp(self.f, self.N)
+        # get the start and end indices in the frequency stamp
+        self.idx = self.get_freq_index(self.freq_range, self.f_stamp)
         # initialize the frequency response matrix
-        self.params = [[[{} for _ in range(self.nr_inputs)] for _ in range(self.nr_outputs)]]
-        # convert time signal to frequency signal
-        self.U = self.time2freq(self.u)
-        self.Y = self.time2freq(self.y)
+        self.params = [[{} for _ in range(self.nr_inputs)] for _ in range(self.nr_outputs)]
         # convert the signal to (m x nr x p x N)
-        self.U_split = self.split_data(self.U, self.N, self.p, self.m)
-        self.Y_split = self.split_data(self.Y, self.N, self.p, self.m)
+        self.u_split = self.split_data(self.u, self.N, self.p, self.m)
+        self.y_split = self.split_data(self.y, self.N, self.p, self.m)
+        # convert time signal to frequency signal
+        self.U = self.time2freq(self.u_split, axis=-1)
+        self.Y = self.time2freq(self.y_split, axis=-1)
         # calculate the mean value of each repeat
-        self.U_bar = self.get_mean_value(self.U_split[:, :, self.nr_abandon:, :])
-        self.Y_bar = self.get_mean_value(self.Y_split[:, :, self.nr_abandon:, :])
+        self.U_bar = np.transpose(self.get_mean_value(self.U[:, :, self.nr_abandon:, :], axis=2), (2, 0, 1))
+        self.Y_bar = np.transpose(self.get_mean_value(self.Y[:, :, self.nr_abandon:, :], axis=2), (2, 0, 1))
         # calculate radian frequency: omega = 2\pi*f
-        self.omega = None
+        self.omega = self.f_stamp[self.idx[0]:self.idx[1]+1] * 2 * np.pi
         # calculate laplace variable: s = j*omega
         self.s = self.omega * 1j  
+        # calculate the average response signal
+        self.G_meas = self.get_measure_transfer_function(self.U_bar, self.Y_bar)
+        # compensate the DC component
+        self.G_meas[0, :, :] = self.G_meas[1, :, :]
+        # calculate the covariance of G
+        self.G_cov = self.get_covariance()
 
-    @staticmethod
-    def split_data() -> np.ndarray:
-        """
+    def get_covariance(self) -> None:
+        """Calculate the covariance of the transfer functions.
         """
         pass
 
     @staticmethod
-    def get_mean_value() -> np.ndarray:
+    def split_data(a: np.ndarray,
+                   N: int,
+                   p: int,
+                   m: int) -> np.ndarray:
+        """Convert a nr_channels x nr_points signal into
+        a nr_channels x m x p x N signal, where 
+        nr_points = N*m*p.
+
+        Args:
+            a (nr_channels x nr_points): the given signal
+            N: the number of points
+            p: the repeat times
+            m: the number of different signals
+        
+        Returns:
+            b (nr_channels x m x p x N): the re-constructed signal
         """
-        """
-        pass
+        nr_channels, nr_points = a.shape
+        return a.reshape(nr_channels, m, p, N)
 
     @staticmethod
-    def time2freq(signal: np.ndarray) -> complex:
-        """Convert time singal to frequency signal.
-        """
+    def get_mean_value(a: np.ndarray,
+                       axis: int) -> np.ndarray:
+        """Calculate the average value along the desired
+        axis.
 
-    def initialization(self) -> None:
-        """Calculate and initialize the necessary parameters.
+        Args:
+            a: the given data
+            axies: the desired axis
 
-        Attributes:
-            nr_inputs: the number of inputs of the system
-            nr_outputs: the number of outputs of the system
+        Returns:
+            b: the averaged data
         """
-        self.nr_inputs = self.u.shape[0]
-        self.nr_outputs = self.y.shape[0]
-        self.Y = self.time2freq(self.y)
-        self.U = self.time2freq(self.U)
+        return np.mean(a, axis=axis)
 
-    def get_measure_transfer_function(self):
+    @staticmethod
+    def time2freq(a: np.ndarray,
+                  axis: int) -> complex:
+        """Convert time singal to frequency signal
+        along the given axis.
+
+        Args:
+            a: the given time signal
+            axis: the desired axis
+        
+        Returns:
+            b: the frequency signal
         """
+        return np.fft.fft(a, axis=axis)
+
+    def get_measure_transfer_function(self, 
+                                      U: complex,
+                                      Y: complex) -> complex:
+        """Calculate the measured response based on
+        multiple experiments.
+
+        Args:
+            U (N x nr_inputs x m): the averaged input signals in the frequency domain
+            Y (N x nr_outpus x m): the averaged output signals in the frequency domain
+        
+        Returns:
+            G (N x nr_outpus x nr_inputs): the measured response at each frequency
         """
-        G_meas = np.zeros((self.N, self.nr_outputs, self.nr_inputs))
-        for i in range(self.N):
-            G_meas[i, :, :] = None
-        return G_meas
+        N, nr_inputs, m = U.shape
+        U_pinv = np.linalg.pinv(U.reshape(-1, nr_inputs, m)).reshape(N, m, nr_inputs) 
+        return np.einsum('nij,njk->nik', Y, U_pinv) 
 
     @staticmethod
     def compensate_delay(G: complex,
@@ -176,23 +241,17 @@ class SysIdentification():
 
     @staticmethod
     def get_transfer_function(num: np.ndarray,
-                              den: np.ndarray,
-                              nr_delay: int,
-                              dt: float,
-                              s: complex) -> complex:
+                              den: np.ndarray) -> complex:
         """Return the transfer function with delays.
 
         Args:
             num: the parameters of the numerator
             den: the parameters of the denominator
-            nr_delay: the number of delays
-            dt: the time step
-            s: the Laplace variable
         
         Returns:
             G: the transfer function with delays
         """
-        return signal.TransferFunction(num, den) * np.exp(-dt * s * nr_delay)
+        return signal.TransferFunction(num, den)
     
     @staticmethod
     def get_amp_difference(amp1: np.ndarray,
@@ -203,14 +262,51 @@ class SysIdentification():
 
     @staticmethod
     def get_phase_difference(phase1: np.ndarray,
-                             phase2: np.ndarray) -> float:
+                             phase2: np.ndarray,
+                             mode: str) -> float:
         """Return the phase difference. In degree.
         """
-        return np.abs(phase2 - phase1)
+        if mode == 'degree':
+            return np.abs(phase2 - phase1)
+        elif mode == 'radian':
+            return np.abs((phase2 - phase1)*180/np.pi)
+        
+    @staticmethod
+    def get_amp(G: np.ndarray) -> np.ndarray:
+        """Return the amplitude of the measured points.
+        """
+        return np.abs(G)
+    
+    @staticmethod
+    def get_phase(G: np.ndarray,
+                  mode: str='degree') -> np.ndarray:
+        """Return the phase of the measured points in
+        radian or degree.
+        """
+        if mode == 'degree':
+            return np.angle(G, deg=True)
+        elif mode == 'radian':
+            return np.angle(G)
+
+    def get_amp_phase(self, G: np.ndarray,
+                      mode: str) -> tuple[np.ndarray,
+                                          np.ndarray]:
+        """Calculate the amplitude and phase based
+        on the given measured points.
+
+        Args:
+            G: the measured points
+            mode: degree or radian
+        
+        Returns:
+            amp: the amplitude in the frequency domain
+            phase: the phase in the frequency domain
+        """
+        return self.get_amp(G), self.get_phase(G, mode)
 
     def get_loss(self, G1: complex, 
                  G2: complex,
-                 omega: complex,
+                 mode: str='degree',
                  eta_amp: float=0.5,
                  eta_phase: float=0.5) -> float:
         """Compare the different between two transfer
@@ -218,9 +314,8 @@ class SysIdentification():
         difference of amplitude and phase.
 
         Args:
-            G1: the first transfer function
-            G2: the second transfer function
-            omega: the radian frequency
+            G1: the measured points of the first transfer function
+            G2: the measured points of the second transfer function
             eta_amp: the weight of the amplitude difference
             eta_phase: the weight of the phase difference
         
@@ -228,41 +323,138 @@ class SysIdentification():
             loss: the difference between two transfer functions
         """
         # get the amplitude and phase of G1
-        _, amp1, phase1 = signal.bode(G1, omega)
+        amp1, phase1 = self.get_amp_phase(G1, mode)
         # get the amplitude and phase of G2
-        _, amp2, phase2 = signal.bode(G2, omega)
+        amp2, phase2 = self.get_amp_phase(G2, mode)
         # calculate the amplitude difference
         amp_diff = self.get_amp_difference(amp1, amp2)
         # calculate the phase differnce
-        phase_diff = self.get_phase_difference(phase1, phase2)
+        phase_diff = self.get_phase_difference(phase1, phase2, mode)
         # calculate RMS error
         return eta_amp*np.sqrt(np.mean(amp_diff ** 2) + eta_phase*np.mean(phase_diff ** 2))
 
-    def _identify_channel(self, G: complex, 
+    # def get_loss(self, H1: complex, 
+    #              H2: complex,
+    #              omega: complex,
+    #              eta_amp: float=0.5,
+    #              eta_phase: float=0.5) -> float:
+    #     """Compare the different between two transfer
+    #     functions. Will comprehensively consider the
+    #     difference of amplitude and phase.
+
+    #     Args:
+    #         G1: the first transfer function
+    #         G2: the second transfer function
+    #         omega: the radian frequency
+    #         eta_amp: the weight of the amplitude difference
+    #         eta_phase: the weight of the phase difference
+        
+    #     Returns:
+    #         loss: the difference between two transfer functions
+    #     """
+    #     # get the amplitude and phase of H1
+    #     _, amp1, phase1 = signal.bode(H1, omega)
+    #     # get the amplitude and phase of H2
+    #     _, amp2, phase2 = signal.bode(H2, omega)
+    #     # calculate the amplitude difference
+    #     amp_diff = self.get_amp_difference(amp1, amp2)
+    #     # calculate the phase differnce
+    #     phase_diff = self.get_phase_difference(phase1, phase2)
+    #     # calculate RMS error
+    #     return eta_amp*np.sqrt(np.mean(amp_diff ** 2) + eta_phase*np.mean(phase_diff ** 2))
+    
+    def get_frequency_response_without_delay(self, 
+                                             num: np.ndarray,
+                                             den: np.ndarray) -> complex:
+        """Build the transfer function based on num and den.
+        Then calculate the response at certain frequency without
+        delay.
+
+        Args: 
+            num: the parameters of the numerator
+            den: the parameters of the denominator
+
+        Returns:
+            G: the response at certrain frequency without delay effect
+        """
+        H = self.get_transfer_function(num, den)
+        _,  G = H.freqresp(self.omega)
+        return G
+
+
+    def get_frequency_response_with_delay(self, num: np.ndarray,
+                                                den: np.ndarray,
+                                                nr_delay: int,
+                                                dt: float,
+                                                s: complex) -> complex:
+        """Calculate the response at certain frequency,
+        considering the effect of delay.
+
+        Args: 
+            num: the parameters of the numerator
+            den: the parameters of the denominator
+            nr_delay: the number of delays
+            dt: the time step
+            s: the Laplace variable
+
+        Returns:
+            G: the response at certrain frequency considering delay effect
+        """
+        return self.get_frequency_response_without_delay(num, den) * np.exp(-dt * s * nr_delay)
+
+    def fit_channel(self, G: complex, 
                           nr_delay: int,
                           order_num: int,
                           order_den: int) -> tuple[float,
                                                    np.ndarray,
                                                    np.ndarray]:
-        
+        # compensate the effect of delay
         G_comp = self.compensate_delay(G, nr_delay, self.dt, self.s)
+        # fit the transfer function, get corresponding parameters
         num, den = self.fit_transfer_function(G_comp, order_num, order_den, self.s)
-        G_est = self.get_transfer_function(num, den, nr_delay)
-        loss = self.get_loss(G, G_est, self.omega)
+        # get the fitted transfer function considering the effect of delay
+        G_est = self.get_frequency_response_with_delay(num, den, nr_delay, self.dt, self.s)
+        # calculate the loss
+        loss = self.get_loss(G, G_est)
         return loss, num, den
     
+    @staticmethod
+    def select_min_index(a: list,
+                         key: str) -> tuple:
+        """Return the indices of the minimum value
+        of the given key in the list.
+
+        Args:
+            a: the given list
+            key: the desired key
+        
+        Returns:
+            idx: the index
+        """
+        loss_array = np.array([[[d.get(key, float("inf")) for d in row] for row in layer] for layer in a])
+        min_index = np.unravel_index(np.argmin(loss_array), loss_array.shape)
+        return min_index
+
     def identify_channel(self, G: complex) -> dict:
+        """Fit a transfer function for one entry of the 
+        frequency response matrix (FRM).
+
+        Args:
+            G: the measured points of one entry of FRM, only consider the valid range
+        
+        Returns:
+            data: the parameters of the fitted transfer function
         """
-        """
-        data = [[[{'loss': 10000} for _ in range(self.delay_max)] for _ in range(self.order_max)] for _ in range(self.order_max)]
+        # data <- [delay][den][num]
+        data = [[[{'loss': 10000} for _ in range(self.order_max)] for _ in range(self.order_max)] for _ in range(self.delay_max)]
         
         for nr_delay in range(self.delay_max):
             for order_den in range(1, self.order_max):
                 for order_num in range(order_den+1):
-                    loss, num, den = self._identify_channel(G=G,
-                                                            nr_delay=nr_delay,
-                                                            order_num=order_num,
-                                                            order_den=order_den)
+                    loss, num, den = self.fit_channel(G=G,
+                                                      nr_delay=nr_delay,
+                                                      order_num=order_num,
+                                                      order_den=order_den)
 
                     data[nr_delay][order_den][order_num] = {
                         'loss': loss,
@@ -272,6 +464,9 @@ class SysIdentification():
                         'num': num,
                         'den': den,
                     }
+        
+        (a1, a2, a3) = self.select_min_index(data, 'loss')
+        return data[a1][a2][a3]
                     
     def identify_system(self) -> None:
         """Identify the system based on the given
@@ -279,9 +474,6 @@ class SysIdentification():
 
         Args:
         """
-        # calculate the average response signal
-        self.G_meas = self.get_measure_transfer_function()
-        self.G_cov = None
         for row in range(self.nr_outputs):
             for col in range(self.nr_inputs):
-                self.params[row][col] = self.identify_channel(self.G_meas[:, row, col])
+                self.params[row][col] = self.identify_channel(self.G_meas[self.idx[0]:self.idx[1]+1, row, col])
