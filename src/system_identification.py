@@ -67,7 +67,7 @@ class SysIdentification():
             y (nr_outputs x N*p*m): the corresponding outputs
         
         Attributes:
-            nr_inputs (int): the number of inputs
+           nr_inputs (int): the number of inputs
             nr_outputs (int): the number of outputs
             f_stamp: the frequency stamp
             idx: the start and end indices in the frequency stamp
@@ -81,7 +81,7 @@ class SysIdentification():
             omega: the valid radian frequency stamp based on the frequency range
             s: the Laplace variable: s = j * omega
             G_meas (N x nr_outputs x nr_inputs): the measured response at each frequency
-            G_cov (nr_outputs*nr_inputs x nr_outputs*nr_inputs): the covariance matrix of the transfer functions            
+            G_cov (nr_outputs*nr_inputs x nr_outputs*nr_inputs): the covariance matrix of the transfer functions         
         """
         # import the inputs and outputs
         self.u = u
@@ -115,10 +115,106 @@ class SysIdentification():
         # calculate the covariance of G
         self.G_cov = self.get_covariance()
 
-    def get_covariance(self) -> None:
-        """Calculate the covariance of the transfer functions.
+    
+    def compute_covariance_y(self,
+                             id_n: int) -> np.ndarray:
+        """Caculate the covariance of the outputs
+
+        Args:
+            p: The total number of repetitions for each experiments
+            U (nr_inputs x m x p x N): the frequency input signals
+            Y (nr_outpus x m x p x N): the frequency output signals
+            U_bar (N x nr_inputs x m): the mean value wrt (p-nr_abandon) times
+            Y_bar (N x nr_outputs x m): the mean value wrt (p-nr_abandon) times
+
+        Returns:
+            Cy (nr_outputs * nr_outputs): Covariance matrix of the output data
         """
-        pass
+        
+        Cy = np.zeros((self.nr_outputs, self.nr_outputs), dtype=np.complex64)
+        Y_mean_over_m = np.mean(self.Y, axis=1)
+        Y_bar = np.mean(Y_mean_over_m, axis=1)
+        for i in range(self.nr_outputs):
+            for j in range(self.nr_outputs):
+                Cy[i, j] = (Y_mean_over_m[i, :, id_n] - Y_bar[i, id_n]).T @ np.conjugate((Y_mean_over_m[j, :, id_n] - Y_bar[i, id_n])) / (self.p - 1)
+        return Cy
+    
+    def compute_covariance_u(self,
+                             id_n: int) -> np.ndarray:
+        """Caculate the covariance of the inputs
+
+        Returns:
+            Cu (nr_inputs * nr_inputs): Covariance matrix of the input data
+
+        """
+        Cu = np.zeros((self.nr_inputs, self.nr_inputs), dtype=np.complex64)
+        U_mean_over_m = np.mean(self.U, axis=1)
+        U_bar = np.mean(U_mean_over_m, axis=1)
+        for i in range(self.nr_inputs):
+            for j in range(self.nr_inputs):
+                Cu[i, j] = (U_mean_over_m[i, :, id_n] - U_bar[i, id_n]).T @ np.conjugate(U_mean_over_m[j, :, id_n] - U_bar[j, id_n]) /(self.p -1)
+        return Cu
+    
+    def compute_covariance_yu(self,
+                              id_n: int) -> np.ndarray:
+        """Caculate the covariance of the inputs and outputs
+
+        Returns:
+            Cyu (nr_outputs * nr_inputs): Cross-covariance matrix between output and input data
+
+        """
+        Cyu = np.zeros((self.nr_outputs, self.nr_inputs), dtype=np.complex64)
+
+        Y_mean_over_m = np.mean(self.Y, axis=1)
+        Y_bar = np.mean(Y_mean_over_m, axis=1)
+        U_mean_over_m = np.mean(self.U, axis=1)
+        U_bar = np.mean(U_mean_over_m, axis=1)
+
+        for i in range(self.nr_outputs):
+            for j in range(self.nr_inputs):
+                Cyu[i, j] = (Y_mean_over_m[i, :, id_n] - Y_bar[i, id_n]).T @ np.conjugate(U_mean_over_m[j, :, id_n]- U_bar[j,id_n]) / (self.p - 1)
+        return Cyu
+    
+    def compute_covariance(self,
+                           id_n: int) -> np.ndarray:
+        Cu = self.compute_covariance_u(id_n)
+        Cy = self.compute_covariance_y(id_n)
+        Cyu = self.compute_covariance_yu(id_n)
+        upper_row = np.hstack([Cy, Cyu])
+        lower_row = np.hstack([Cyu.T, Cu]) 
+        C = np.vstack([upper_row, lower_row])
+        return C
+    
+    def get_covariance_n(self,
+                       id_n: int) -> np.ndarray:
+        """Calculate the covariance of the transfer functions.
+
+        Args:
+            self.U(nr_outputs x m x p x N)
+            
+        Returns:
+            G_cov(nr_outputs * nr_inputs * nr_outputs * nr_inputs): the covariacne matrix of the transfer functions
+        """
+        I_ny = np.eye(self.nr_outputs)
+        Vk = np.hstack([I_ny, -self.G_meas[id_n, :, :]])
+        Ck = self.compute_covariance(id_n)
+        element_2 = Vk @ Ck @ (Vk.conj().T)
+   
+        element_1 = np.linalg.inv((self.U_bar[id_n, :, :] @ (self.U_bar[id_n, :, :].conj().T)).conj())
+        cov = np.kron(element_1, element_2)
+        return cov
+
+    def get_covariance(self) -> np.ndarray:
+        covariance =np.zeros((self.N, self.nr_outputs, self.nr_inputs), dtype=np.complex64)
+        for id_n in range(self.idx[0], self.idx[1] + 1):
+            cov = self.get_covariance_n(id_n)
+            k = 0
+            for i in range(self.nr_inputs):
+                for j in range(self.nr_outputs):
+                    covariance[id_n, j, i] = cov[k, k]
+                    k = k + 1
+        return covariance     
+
 
     @staticmethod
     def split_data(a: np.ndarray,
