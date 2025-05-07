@@ -128,3 +128,27 @@ class Visualization():
 
         plt.tight_layout()
         plt.show()
+
+    def plot_segment_signal(self, y, t_stamp):
+        """
+        This function is used to plot the respnse signal of each segment
+        args:
+            y: response signal of each segment (6 * N)
+            t_stamp: real time stamps collected during the process ( 1 * N )
+        """
+        signal_labels = ['X', 'Y', 'Z', 'Roll', 'Pitch', 'Yaw']
+        plt.figure(figsize=(12, 8))
+        for i in range(6):
+            plt.subplot(6, 1, i+1)
+            plt.plot(t_stamp, y[i, :])
+            plt.title(f'{signal_labels[i]} over Time')
+            plt.xlabel('Time [s]')
+            plt.ylabel(signal_labels[i])
+            plt.grid(True)
+            plt.tight_layout()
+
+        plt.suptitle('Segment Response Signals', fontsize=16, y=1.02)
+        plt.tight_layout()
+        plt.show()
+
+
