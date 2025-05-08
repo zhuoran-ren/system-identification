@@ -47,22 +47,10 @@ def convert_data(data, base):
     positions = data[0:3, :]         # x, y, z
     base_position = base[0:3, :]
     quaternions = data[3:7, :]       # w, x, y, z
-    base_quaternions = data[3:7, :]
+    quat_scipy = quaternions.T
+    r = Rotation.from_quat(quat_scipy)
+    euler = r.as_euler('xyz', degrees=True).T
 
-    # eulers = quaternion_to_euler(quaternions)
-    # base = quaternion_to_euler(base_quaternions)
-    quat_scipy = quaternions[[0, 1, 2, 3], :]  # 变成 (4, N) 顺序 x, y, z, w
-
-    r0 = Rotation.from_quat(base_quaternions[:, 100])
-
-    # 全部转换为 Rotation 对象
-    r_all = Rotation.from_quat(quat_scipy.T)
-
-    # 相对于初始的相对旋转
-    r_rel = r_all * r0.inv()
-
-    # 转换为欧拉角（绕 xyz 轴）
-    euler = r_rel.as_euler('xyz', degrees=True).T  # shape (3, N)
     return np.vstack((positions - base_position, euler))  # shape: (6, N)
 
 def convert_y_base(base):
@@ -71,19 +59,7 @@ def convert_y_base(base):
     """
     position = base[0:3, :]
     quaternions = base[3:7, :]
-    # print(np.mean(quaternions, axis=1))
-    # print(np.std(quaternions, axis=1))  # 看看有没有实际变化
-    # # eulers = quaternion_to_euler(quaternions)
-    # quat_scipy = quaternions[[0, 1, 2, 3], :]  # 变成 (4, N) 顺序 x, y, z, w
-
-    # r0 = Rotation.from_quat(quat_scipy[:, 100])
-
-    # r_all = Rotation.from_quat(quat_scipy.T)
-
-    # r_rel = r_all * r0.inv()
-
-    quat_scipy = quaternions.T            # shape (N, 4) — no reorder needed!
-
+    quat_scipy = quaternions.T          
     r = Rotation.from_quat(quat_scipy)
     euler = r.as_euler('xyz', degrees=True).T    # shape (3, N)
     return np.vstack((position, euler)) 
